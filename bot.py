@@ -49,7 +49,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 
 # Запасные модели на случай перегрузки (503/429) основной
-FALLBACK_MODELS = ["gemini-2.0-flash", "gemini-2.0-flash-lite"]
+FALLBACK_MODELS = ["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash"]
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chat_history.db")
 MAX_HISTORY = 20  # сколько последних сообщений помнить на собеседника
