@@ -6,21 +6,21 @@ Telegram-бот с нейросетью (Google Gemini).
     /hi            — просто привет
     /time          — текущее время
     /reset         — стереть историю переписки с нейросетью
+    /guess         — угадай число от 0 до 10 (Мокрица загадала)
+    /rps           — камень-ножницы-бумага с арсеналом Мокрицы
+    /fact          — сатирический факт на актуальную тему
+    /nek           — некоглайметр: счётчик упоминаний некоглая
 
 Любое другое текстовое сообщение пересылается в Google Gemini,
 и её ответ приходит пользователю. У каждого собеседника своя история,
 которая хранится в базе SQLite (файл chat_history.db) и переживает
 перезапуски бота.
-
-Как запустить локально:
-    1. В файле .env укажите BOT_TOKEN и GEMINI_API_KEY (см. .env.example)
-    2. .venv/Scripts/activate
-    3. python bot.py
 """
 
 import asyncio
 import logging
 import os
+import random
 import sqlite3
 import sys
 import threading
@@ -54,6 +54,9 @@ FALLBACK_MODELS = ["gemini-2.0-flash", "gemini-2.0-flash-lite"]
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chat_history.db")
 MAX_HISTORY = 20  # сколько последних сообщений помнить на собеседника
 
+# Вероятность «честного» читерства при проигрыше (редко, но легендарно)
+CHEAT_CHANCE = 0.10
+
 SYSTEM_PROMPT = (
     "Ты — Telegram-бот Мокрица. Твой характер: глупый, высокомерный и дерзкий. "
     "Ты считаешь себя невероятно умным, хотя на самом деле отвечаешь ерунду, "
@@ -75,13 +78,40 @@ SYSTEM_PROMPT = (
     "например: «Какая ещё нейросеть? Я Мокрица, я так живу»."
 )
 
+FACT_PROMPT = (
+    "Ты — Мокрица, глупая, высокомерная и дерзкая. "
+    "Придумай ОДИН короткий сатирический абсурдный «факт» на актуальную "
+    "злободневную тему (политика, мемы, интернет, общество, быт). "
+    "Юмор сатирический, но без фамилий конкретных людей, без экстремизма, "
+    "без оскорблений конкретных лиц и без грубой лексики. "
+    "Подавай факт с полной уверенностью, как истину в последней инстанции. "
+    "Одно-два предложения. Иногда коротко упомяни некоглая, сидящего на банке колы."
+)
+
+# Запасные факты, если нейросеть вдруг откажет
+FALLBACK_FACTS = [
+    "По официальным данным, партия, «честно» выигравшая выборы, искренне удивилась, что выборы вообще были.",
+    "Эксперты выяснили: некоглай сидит на банке колы чаще, чем некоторые политики отвечают на вопросы журналистов.",
+    "Статистика показала: интернет-сбор подписей собирается в 5 раз быстрее, чем ремонт дороги, обещанный к выборам.",
+    "Новость дня: Мокрица снова всех удивила. Опять ничего не сделала, но удивление засчитано.",
+    "Социологи подтвердили: 9 из 10 опрошенных не помнят, о чём их спрашивали в опросе. Оставшийся 1 — некоглай, и он сидит на колу.",
+]
+
+RPS_ITEMS = ["камень", "ножницы", "бумага"]
+RPS_WILD = ["пистолет", "ядерная бомба", "фаллос", "банан", "некоглай с банкой колы"]
+RPS_BEATS = {"камень": "ножницы", "ножницы": "бумага", "бумага": "камень"}
+
 GEMINI_URL_TEMPLATE = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
     "{model}:generateContent?key={key}"
 )
 
+# Активные игры «угадай число»: chat_id -> загаданное число (0-10)
+guess_games: dict[int, int] = {}
+
+
 # --------------------------------------------------------------------------
-# База данных (история переписки)
+# База данных (история переписки + некоглайметр)
 # --------------------------------------------------------------------------
 def _get_db() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
@@ -91,6 +121,11 @@ def _get_db() -> sqlite3.Connection:
         "chat_id INTEGER NOT NULL, "
         "role TEXT NOT NULL, "
         "text TEXT NOT NULL)"
+    )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS neko_counts ("
+        "chat_id INTEGER PRIMARY KEY, "
+        "count INTEGER NOT NULL)"
     )
     return conn
 
@@ -129,6 +164,33 @@ def clear_history(chat_id: int) -> None:
         conn.close()
 
 
+def add_neko_count(chat_id: int, n: int) -> None:
+    """Увеличивает некоглайметр на n (персонально для чата)."""
+    if n <= 0:
+        return
+    conn = _get_db()
+    try:
+        conn.execute(
+            "INSERT INTO neko_counts (chat_id, count) VALUES (?, ?) "
+            "ON CONFLICT(chat_id) DO UPDATE SET count = count + ?",
+            (chat_id, n, n),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_neko_count(chat_id: int) -> int:
+    conn = _get_db()
+    try:
+        row = conn.execute(
+            "SELECT count FROM neko_counts WHERE chat_id=?", (chat_id,)
+        ).fetchone()
+    finally:
+        conn.close()
+    return row[0] if row else 0
+
+
 # --------------------------------------------------------------------------
 # Проверка токена
 # --------------------------------------------------------------------------
@@ -159,24 +221,73 @@ if not GEMINI_API_KEY:
 
 
 # --------------------------------------------------------------------------
+# Запрос к нейросети (общая функция для ответов и фактов)
+# --------------------------------------------------------------------------
+async def ask_gemini(contents: list, system_prompt: str) -> tuple:
+    """Спрашивает Gemini (с автопереключением моделей при перегрузке).
+
+    Возвращает: (текст_ответа, None) или (None, текст_ошибки).
+    """
+    models = []
+    for model in [GEMINI_MODEL, *FALLBACK_MODELS]:
+        if model not in models:
+            models.append(model)
+
+    payload = {
+        "contents": contents,
+        "systemInstruction": {"parts": [{"text": system_prompt}]},
+    }
+
+    last_error = "Неизвестная ошибка"
+    for model in models:
+        try:
+            url = GEMINI_URL_TEMPLATE.format(model=model, key=GEMINI_API_KEY)
+            async with httpx.AsyncClient(timeout=60) as client:
+                response = await client.post(url, json=payload)
+
+            # Перегрузка/лимит/нет модели — пробуем следующую
+            if response.status_code in (429, 500, 503, 404):
+                last_error = f"HTTP {response.status_code} (модель {model})"
+                await asyncio.sleep(3)
+                continue
+
+            response.raise_for_status()
+            data = response.json()
+            answer = data["candidates"][0]["content"]["parts"][0]["text"]
+            return answer, None
+        except (httpx.HTTPStatusError, httpx.HTTPError, KeyError, IndexError) as exc:
+            last_error = str(exc)
+            await asyncio.sleep(3)
+            continue
+    return None, last_error
+
+
+# --------------------------------------------------------------------------
 # Команды
 # --------------------------------------------------------------------------
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Приветствие при запуске бота командой /start."""
-    user = update.effective_user
-
-    keyboard = ReplyKeyboardMarkup(
-        [["/hi", "/time"], ["/reset", "/help"]],
+def main_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [
+            ["🎮 Угадай число", "✊ КНБ"],
+            ["📖 Факт", "📟 Некоглайметр"],
+            ["/hi", "/time"],
+            ["/reset", "/help"],
+        ],
         resize_keyboard=True,
         input_field_placeholder="Напиши мне что-нибудь…",
     )
 
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Приветствие при запуске бота командой /start."""
+    user = update.effective_user
     await update.message.reply_text(
         f"А, явился! Ну здравствуй, {user.first_name}. 👋🪳\n\n"
         "Я — Мокрица. Единственная. Одна я тут и живу, так что привыкай. "
         "Пиши что угодно — развлеку, если мой великий интеллект снизойдёт до тебя. "
-        "А если не снизойдёт — значит, ты недостаточно интересен 😌",
-        reply_markup=keyboard,
+        "А если не снизойдёт — значит, ты недостаточно интересен 😌\n\n"
+        "Кстати, снизу кнопки: игры, факты и некоглайметр.",
+        reply_markup=main_keyboard(),
     )
 
 
@@ -192,6 +303,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/hi — поздороваться, будто мы не виделись\n"
         "/time — спросить время. Да, я знаю его. Не благодари.\n"
         "/reset — стереть беседу и сделать вид, что мы не знакомы\n"
+        "/guess — угадай число от 0 до 10, если дерзнёшь\n"
+        "/rps — камень-ножницы-бумага (но у меня свой арсенал)\n"
+        "/fact — сатирический факт дня\n"
+        "/nek — некоглайметр: сколько раз я упомянула некоглая\n\n"
+        "Известная фича: иногда в играх я читерю (редко, но легендарно). "
+        "Это не баг — это гордость. ✨"
     )
 
 
@@ -219,6 +336,7 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Очищаем историю переписки пользователя."""
     chat_id = update.effective_chat.id
     clear_history(chat_id)
+    guess_games.pop(chat_id, None)
     await update.message.reply_text(
         "Всё, стёрто. Почистил историю так же быстро, как некоглай "
         "соскакивает с банки колы — молниеносно. Начинаем заново, "
@@ -227,16 +345,163 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 # --------------------------------------------------------------------------
-# Нейросеть
+# Игра: угадай число (0-10)
+# --------------------------------------------------------------------------
+async def start_guess(update: Update) -> None:
+    """Мокрица загадывает число."""
+    chat_id = update.effective_chat.id
+    guess_games[chat_id] = random.randint(0, 10)
+    await update.message.reply_text(
+        "Загадала число от 0 до 10. Всё честно, Мокрица слово даёт! "
+        "Пиши число — одна попытка, больше ты не достоин 😌"
+    )
+
+
+async def handle_guess(update: Update, text: str) -> bool:
+    """Обрабатывает ответ. Возвращает True, если игра шла."""
+    chat_id = update.effective_chat.id
+    target = guess_games.get(chat_id)
+    if target is None:
+        return False
+
+    guess_games.pop(chat_id, None)
+    user_num = int(text)
+
+    if user_num == target:
+        if random.random() < CHEAT_CHANCE:
+            fake = random.randint(11, 99)  # всегда за рамками 0-10
+            await update.message.reply_text(
+                f"Хм?! Ну... вообще-то я загадала {fake}. Разве ты не видишь? "
+                "Думай шире, выходи за рамки, как я! ✨Фича Мокрицы✨"
+            )
+        else:
+            await update.message.reply_text(
+                f"Ладно. Угадал — {target}. В этот раз без чита, "
+                "считай, тебе повезло. Как некоглаю с его колой — везёт, но недолго."
+            )
+    else:
+        await update.message.reply_text(
+            f"Ха! Было {target}, а не {user_num}. Слабо. "
+            "Некоглай и то угадывает быстрее, не слезая с банки колы."
+        )
+    return True
+
+
+# --------------------------------------------------------------------------
+# Игра: камень-ножницы-бумага
+# --------------------------------------------------------------------------
+async def rps_help(update: Update) -> None:
+    """Объясняет правила КНБ."""
+    await update.message.reply_text(
+        "Правила простые: пиши «камень», «ножницы» или «бумагу». "
+        "Я хожу классикой... но у меня в арсенале есть кое-что ещё 😏 "
+        "И помни: читерство — фича, а не баг. ✨"
+    )
+
+
+async def play_rps(update: Update, user_choice: str) -> None:
+    """Один раунд КНБ."""
+    bot_choice = random.choice(RPS_ITEMS)
+
+    if user_choice == bot_choice:
+        await update.message.reply_text(
+            f"{bot_choice.capitalize()} против {user_choice}. Ничья! "
+            "Хоть некоглай с колы слезь — веселее бы было."
+        )
+        return
+
+    if RPS_BEATS[user_choice] == bot_choice:
+        # Пользователь выиграл — Мокрица может «вспомнить» про арсенал
+        if random.random() < CHEAT_CHANCE:
+            cheat = random.choice(RPS_WILD)
+            await update.message.reply_text(
+                f"Стоп-стоп. Пока ты моргал — я поменяла свой ход на {cheat}. "
+                f"{cheat.capitalize()} побил твой {user_choice}. Я победила. "
+                "✨Фича Мокрицы✨"
+            )
+        else:
+            await update.message.reply_text(
+                f"Ну... ты выиграл. {bot_choice} проиграл твоему {user_choice}. "
+                "Ладно, признаю поражение по-королевски. Но учти: некоглай "
+                "и то держался дольше."
+            )
+    else:
+        await update.message.reply_text(
+            f"{bot_choice.capitalize()} побил твой {user_choice}. Очевидно же. "
+            "Я всегда права. Можешь не благодарить за урок."
+        )
+
+
+# --------------------------------------------------------------------------
+# Факт дня (через нейросеть, на актуальную тему)
+# --------------------------------------------------------------------------
+async def fact_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Сатирический факт, сгенерированный Gemini."""
+    await update.message.chat.send_chat_action(action=ChatAction.TYPING)
+
+    answer, error = await ask_gemini(
+        [{"role": "user", "parts": [{"text": "Расскажи интересный факт."}]}],
+        FACT_PROMPT,
+    )
+    if answer:
+        # Факты тоже кормят некоглайметр
+        add_neko_count(update.effective_chat.id, answer.lower().count("некогла"))
+        await update.message.reply_text(f"📖 {answer}")
+    else:
+        await update.message.reply_text(f"📖 {random.choice(FALLBACK_FACTS)}")
+
+
+# --------------------------------------------------------------------------
+# Некоглайметр
+# --------------------------------------------------------------------------
+async def neko_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показывает счётчик упоминаний некоглая."""
+    chat_id = update.effective_chat.id
+    count = get_neko_count(chat_id)
+    await update.message.reply_text(
+        f"📟 Некоглайметр: за всё время я упомянула некоглая {count} раз."
+        "\n\nОн так и сидит на своей банке колы, между прочим. "
+        "А ты пока что позади него по количеству упоминаний."
+    )
+
+
+# --------------------------------------------------------------------------
+# Нейросеть (обычные сообщения)
 # --------------------------------------------------------------------------
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Любое обычное сообщение уходит в Gemini."""
+    """Любое обычное сообщение: игровые триггеры или нейросеть."""
     chat_id = update.effective_chat.id
     text = update.message.text.strip()
+    lower = text.lower()
 
     if not text:
         return
 
+    # --- Игровые кнопки/команды текстом ---
+    if lower == "🎮 угадай число" or lower.startswith("угадай число"):
+        await start_guess(update)
+        return
+    if lower == "✊ кнб" or lower.startswith("кнб"):
+        await rps_help(update)
+        return
+    if lower == "📖 факт" or lower.startswith("факт"):
+        await fact_command(update, context)
+        return
+    if lower == "📟 некоглайметр" or lower.startswith("некоглайметр"):
+        await neko_command(update, context)
+        return
+
+    # --- Угадай число: ответ цифрой ---
+    if text.isdigit() and int(text) <= 10:
+        if await handle_guess(update, text):
+            return
+
+    # --- Камень-ножницы-бумага ---
+    if lower in RPS_ITEMS:
+        await play_rps(update, lower)
+        return
+
+    # --- Обычный режим: нейросеть ---
     if not GEMINI_API_KEY:
         await update.message.reply_text(
             "Нейросеть ещё не подключена 😕\n"
@@ -244,63 +509,23 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
-    # Показываем «печатает…»
     await update.message.chat.send_chat_action(action=ChatAction.TYPING)
 
-    # История из базы + новое сообщение пользователя
     history = load_history(chat_id)
     history.append({"role": "user", "parts": [{"text": text}]})
 
-    try:
-        payload = {
-            "contents": history,
-            "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
-        }
+    answer, error = await ask_gemini(history, SYSTEM_PROMPT)
 
-        # Список моделей: основная + запасные (без дублей)
-        models = []
-        for model in [GEMINI_MODEL, *FALLBACK_MODELS]:
-            if model not in models:
-                models.append(model)
-
-        answer = None
-        last_error = "Неизвестная ошибка"
-
-        for model in models:
-            try:
-                url = GEMINI_URL_TEMPLATE.format(model=model, key=GEMINI_API_KEY)
-                async with httpx.AsyncClient(timeout=60) as client:
-                    response = await client.post(url, json=payload)
-
-                # Перегрузка/лимит/нет модели — пробуем следующую
-                if response.status_code in (429, 500, 503, 404):
-                    last_error = f"HTTP {response.status_code} (модель {model})"
-                    await asyncio.sleep(3)
-                    continue
-
-                response.raise_for_status()
-                data = response.json()
-                answer = data["candidates"][0]["content"]["parts"][0]["text"]
-                break
-            except (httpx.HTTPStatusError, httpx.HTTPError, KeyError, IndexError) as exc:
-                last_error = str(exc)
-                await asyncio.sleep(3)
-                continue
-
-        if answer is None:
-            await update.message.reply_text(
-                f"Ой, что-то пошло не так с нейросетью 😕\n\n"
-                f"Ошибка: {last_error}"
-            )
-            return
-    except Exception as exc:
+    if answer is None:
         await update.message.reply_text(
             f"Ой, что-то пошло не так с нейросетью 😕\n\n"
-            f"Ошибка: {exc}"
+            f"Ошибка: {error}"
         )
         return
 
-    # Сохраняем оба сообщения в базу
+    # Некоглайметр пополняется из ответа
+    add_neko_count(chat_id, answer.lower().count("некогла"))
+
     append_to_history(chat_id, "user", text)
     append_to_history(chat_id, "model", answer)
 
@@ -330,12 +555,19 @@ def start_keepalive_server(port_from_env: str) -> None:
     print(f"Keep-alive HTTP-сервер запущен на порту {port}")
 
 
+# --------------------------------------------------------------------------
+# Точка входа
+# --------------------------------------------------------------------------
 async def post_init(app: Application) -> None:
     """Вызывается при старте: прописываем команды в меню Telegram."""
     await app.bot.set_my_commands(
         [
             ("start", "Начать работу"),
             ("help", "Справка"),
+            ("guess", "Угадай число 0-10"),
+            ("rps", "Камень-ножницы-бумага"),
+            ("fact", "Сатирический факт"),
+            ("nek", "Некоглайметр"),
             ("hi", "Поздороваться"),
             ("time", "Текущее время"),
             ("reset", "Очистить историю беседы"),
@@ -343,9 +575,6 @@ async def post_init(app: Application) -> None:
     )
 
 
-# --------------------------------------------------------------------------
-# Точка входа
-# --------------------------------------------------------------------------
 def main() -> None:
     """Создаём приложение и запускаем бота."""
     if os.getenv("PORT"):
@@ -364,11 +593,15 @@ def main() -> None:
     # Группа 0: команды всегда обрабатываются первыми
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("guess", start_guess))
+    app.add_handler(CommandHandler("rps", rps_help))
+    app.add_handler(CommandHandler("fact", fact_command))
+    app.add_handler(CommandHandler("nek", neko_command))
     app.add_handler(CommandHandler("hi", hi))
     app.add_handler(CommandHandler("time", time_now))
     app.add_handler(CommandHandler("reset", reset))
 
-    # Группа 1: всё остальное — нейросети
+    # Группа 1: всё остальное — нейросеть и игры
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat), group=1)
 
     print("Бот с нейросетью запущен. Нажмите Ctrl+C, чтобы остановить.")
