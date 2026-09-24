@@ -3,6 +3,7 @@ Telegram-бот с нейросетью (Google Gemini).
 
 Команды:
     /start, /help  — руководство
+    /menu          — красивое меню с кнопками
     /hi            — просто привет
     /time          — текущее время
     /reset         — стереть историю переписки с нейросетью
@@ -28,9 +29,16 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import httpx
 from dotenv import load_dotenv
-from telegram import ReplyKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, Update
 from telegram.constants import ChatAction
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
 # --------------------------------------------------------------------------
 # Настройки
@@ -263,11 +271,48 @@ async def ask_gemini(contents: list, system_prompt: str) -> tuple:
 
 
 # --------------------------------------------------------------------------
-# Команды
+# Личность и общие тексты
+# --------------------------------------------------------------------------
+HELP_TEXT = (
+    "Великая Мокрица объясняет, что здесь можно делать:\n\n"
+    "💬 Просто пиши текст — отвечу, чем богат (богат я, кстати, сильно)\n"
+    "🧠 Я помню нашу беседу (до 20 последних сообщений — большего ты не заслужил)\n\n"
+    "Команды:\n"
+    "☰ /menu — красивое меню, всё в кнопках\n"
+    "/start — позвать меня (не приду, но отвечу)\n"
+    "/help — эта инструкция, в который раз\n"
+    "/hi — поздороваться, будто мы не виделись\n"
+    "/time — спросить время. Да, я знаю его. Не благодари.\n"
+    "/reset — стереть беседу и сделать вид, что мы не знакомы\n"
+    "/guess — угадай число от 0 до 10, если дерзнёшь\n"
+    "/rps — камень-ножницы-бумага (но у меня свой арсенал)\n"
+    "/fact — сатирический факт дня\n"
+    "/nek — некоглайметр: сколько раз я упомянула некоглая\n\n"
+    "Известная фича: иногда в играх я читерю (редко, но легендарно). "
+    "Это не баг — это гордость. ✨"
+)
+
+MENU_TEXT = (
+    "🪳 *Меню великой Мокрицы*\n\n"
+    "Выбирай, что меня развлечёт — я снизойду до лучшего варианта:"
+)
+
+GAMES_TEXT = (
+    "🎮 *Игры честной Мокрицы*\n\n"
+    "Все игры — честные. Ну, почти. ✨\n"
+    "Совет: в «Угадай число» пиши цифру от 0 до 10, "
+    "в КНБ — слова «камень», «ножницы», «бумага»."
+)
+
+
+# --------------------------------------------------------------------------
+# Клавиатуры
 # --------------------------------------------------------------------------
 def main_keyboard() -> ReplyKeyboardMarkup:
+    """Обычная клавиатура под полем ввода (быстрый доступ)."""
     return ReplyKeyboardMarkup(
         [
+            ["☰ Меню"],
             ["🎮 Угадай число", "✊ КНБ"],
             ["📖 Факт", "📟 Некоглайметр"],
             ["/hi", "/time"],
@@ -278,88 +323,141 @@ def main_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Приветствие при запуске бота командой /start."""
-    user = update.effective_user
-    await update.message.reply_text(
-        f"А, явился! Ну здравствуй, {user.first_name}. 👋🪳\n\n"
-        "Я — Мокрица. Единственная. Одна я тут и живу, так что привыкай. "
-        "Пиши что угодно — развлеку, если мой великий интеллект снизойдёт до тебя. "
-        "А если не снизойдёт — значит, ты недостаточно интересен 😌\n\n"
-        "Кстати, снизу кнопки: игры, факты и некоглайметр.",
-        reply_markup=main_keyboard(),
+def main_menu_keyboard() -> InlineKeyboardMarkup:
+    """Красивое меню — кнопки прямо в сообщении."""
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("🎮 Игры", callback_data="menu_games"),
+             InlineKeyboardButton("📖 Факт дня", callback_data="menu_fact")],
+            [InlineKeyboardButton("📟 Некоглайметр", callback_data="menu_neko"),
+             InlineKeyboardButton("⏰ Время", callback_data="menu_time")],
+            [InlineKeyboardButton("👋 Привет", callback_data="menu_hi"),
+             InlineKeyboardButton("🧹 Сброс", callback_data="menu_reset")],
+            [InlineKeyboardButton("❓ Помощь", callback_data="menu_help")],
+        ]
     )
 
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Справка по командам."""
-    await update.message.reply_text(
-        "Великая Мокрица объясняет, что здесь можно делать:\n\n"
-        "💬 Просто пиши текст — отвечу, чем богат (богат я, кстати, сильно)\n"
-        "🧠 Я помню нашу беседу (до 20 последних сообщений — большего ты не заслужил)\n\n"
-        "Команды:\n"
-        "/start — позвать меня (не приду, но отвечу)\n"
-        "/help — эта инструкция, в который раз\n"
-        "/hi — поздороваться, будто мы не виделись\n"
-        "/time — спросить время. Да, я знаю его. Не благодари.\n"
-        "/reset — стереть беседу и сделать вид, что мы не знакомы\n"
-        "/guess — угадай число от 0 до 10, если дерзнёшь\n"
-        "/rps — камень-ножницы-бумага (но у меня свой арсенал)\n"
-        "/fact — сатирический факт дня\n"
-        "/nek — некоглайметр: сколько раз я упомянула некоглая\n\n"
-        "Известная фича: иногда в играх я читерю (редко, но легендарно). "
-        "Это не баг — это гордость. ✨"
+def games_keyboard() -> InlineKeyboardMarkup:
+    """Подменю игр."""
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("🎲 Угадай число", callback_data="menu_guess"),
+             InlineKeyboardButton("✊ КНБ", callback_data="menu_rps")],
+            [InlineKeyboardButton("◀️ В меню", callback_data="menu_main")],
+        ]
     )
 
 
-async def hi(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+# --------------------------------------------------------------------------
+# Основные действия (общие для команд и меню)
+# --------------------------------------------------------------------------
+async def action_start_guess(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> None:
+    """Мокрица загадывает число."""
+    guess_games[chat_id] = random.randint(0, 10)
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=(
+            "Загадала число от 0 до 10. Всё честно, Мокрица слово даёт! "
+            "Пиши число — одна попытка, больше ты не достоин 😌"
+        ),
+    )
+
+
+async def action_rps_help(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> None:
+    """Объясняет правила КНБ."""
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=(
+            "Правила простые: пиши «камень», «ножницы» или «бумагу». "
+            "Я хожу классикой... но у меня в арсенале есть кое-что ещё 😏 "
+            "И помни: читерство — фича, а не баг. ✨"
+        ),
+    )
+
+
+async def action_hi(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> None:
     """Попросту здороваемся в ответ."""
-    await update.message.reply_text(
-        f"{update.effective_user.first_name}? Опять ты. Ладно, привет. "
-        "Раз уж ты поздоровался — считай, мы друзья. Учитывая мой статус, "
-        "это большая честь для тебя 😏"
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=(
+            "Опять ты. Ладно, привет! Раз уж ты поздоровался — считай, мы друзья. "
+            "Учитывая мой статус, это большая честь для тебя 😏"
+        ),
     )
 
 
-async def time_now(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def action_time(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> None:
     """Показываем текущее время."""
     from datetime import datetime
 
     now = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
-    await update.message.reply_text(
-        f"Сейчас {now} ⏰ Хочешь знать, бежит ли время? "
-        "Бежит. Но с такими собеседниками, как ты, оно скорее ползёт."
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=(
+            f"Сейчас {now} ⏰ Хочешь знать, бежит ли время? "
+            "Бежит. Но с такими собеседниками, как ты, оно скорее ползёт."
+        ),
     )
 
 
-async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def action_reset(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> None:
     """Очищаем историю переписки пользователя."""
-    chat_id = update.effective_chat.id
     clear_history(chat_id)
     guess_games.pop(chat_id, None)
-    await update.message.reply_text(
-        "Всё, стёрто. Почистил историю так же быстро, как некоглай "
-        "соскакивает с банки колы — молниеносно. Начинаем заново, "
-        "с чистого листа. И в этот раз постарайся быть интереснее 🧹"
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=(
+            "Всё, стёрто. Почистил историю так же быстро, как некоглай "
+            "соскакивает с банки колы — молниеносно. Начинаем заново, "
+            "с чистого листа. И в этот раз постарайся быть интереснее 🧹"
+        ),
+    )
+
+
+async def action_help(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> None:
+    """Справка по командам."""
+    await context.bot.send_message(chat_id=chat_id, text=HELP_TEXT)
+
+
+async def action_fact(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> None:
+    """Сатирический факт, сгенерированный Gemini."""
+    await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+
+    answer, error = await ask_gemini(
+        [{"role": "user", "parts": [{"text": "Расскажи интересный факт."}]}],
+        FACT_PROMPT,
+    )
+    if answer:
+        # Факты тоже кормят некоглайметр
+        add_neko_count(chat_id, answer.lower().count("некогла"))
+        await context.bot.send_message(chat_id=chat_id, text=f"📖 {answer}")
+    else:
+        await context.bot.send_message(
+            chat_id=chat_id, text=f"📖 {random.choice(FALLBACK_FACTS)}"
+        )
+
+
+async def action_neko(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> None:
+    """Показывает счётчик упоминаний некоглая."""
+    count = get_neko_count(chat_id)
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=(
+            f"📟 Некоглайметр: за всё время я упомянула некоглая {count} раз."
+            "\n\nОн так и сидит на своей банке колы, между прочим. "
+            "А ты пока что позади него по количеству упоминаний."
+        ),
     )
 
 
 # --------------------------------------------------------------------------
 # Игра: угадай число (0-10)
 # --------------------------------------------------------------------------
-async def start_guess(update: Update) -> None:
-    """Мокрица загадывает число."""
-    chat_id = update.effective_chat.id
-    guess_games[chat_id] = random.randint(0, 10)
-    await update.message.reply_text(
-        "Загадала число от 0 до 10. Всё честно, Мокрица слово даёт! "
-        "Пиши число — одна попытка, больше ты не достоин 😌"
-    )
-
-
-async def handle_guess(update: Update, text: str) -> bool:
+async def action_handle_guess(
+    context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: str
+) -> bool:
     """Обрабатывает ответ. Возвращает True, если игра шла."""
-    chat_id = update.effective_chat.id
     target = guess_games.get(chat_id)
     if target is None:
         return False
@@ -370,19 +468,28 @@ async def handle_guess(update: Update, text: str) -> bool:
     if user_num == target:
         if random.random() < CHEAT_CHANCE:
             fake = random.randint(11, 99)  # всегда за рамками 0-10
-            await update.message.reply_text(
-                f"Хм?! Ну... вообще-то я загадала {fake}. Разве ты не видишь? "
-                "Думай шире, выходи за рамки, как я! ✨Фича Мокрицы✨"
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=(
+                    f"Хм?! Ну... вообще-то я загадала {fake}. Разве ты не видишь? "
+                    "Думай шире, выходи за рамки, как я! ✨Фича Мокрицы✨"
+                ),
             )
         else:
-            await update.message.reply_text(
-                f"Ладно. Угадал — {target}. В этот раз без чита, "
-                "считай, тебе повезло. Как некоглаю с его колой — везёт, но недолго."
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=(
+                    f"Ладно. Угадал — {target}. В этот раз без чита, "
+                    "считай, тебе повезло. Как некоглаю с его колой — везёт, но недолго."
+                ),
             )
     else:
-        await update.message.reply_text(
-            f"Ха! Было {target}, а не {user_num}. Слабо. "
-            "Некоглай и то угадывает быстрее, не слезая с банки колы."
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=(
+                f"Ха! Было {target}, а не {user_num}. Слабо. "
+                "Некоглай и то угадывает быстрее, не слезая с банки колы."
+            ),
         )
     return True
 
@@ -390,23 +497,19 @@ async def handle_guess(update: Update, text: str) -> bool:
 # --------------------------------------------------------------------------
 # Игра: камень-ножницы-бумага
 # --------------------------------------------------------------------------
-async def rps_help(update: Update) -> None:
-    """Объясняет правила КНБ."""
-    await update.message.reply_text(
-        "Правила простые: пиши «камень», «ножницы» или «бумагу». "
-        "Я хожу классикой... но у меня в арсенале есть кое-что ещё 😏 "
-        "И помни: читерство — фича, а не баг. ✨"
-    )
-
-
-async def play_rps(update: Update, user_choice: str) -> None:
+async def action_play_rps(
+    context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_choice: str
+) -> None:
     """Один раунд КНБ."""
     bot_choice = random.choice(RPS_ITEMS)
 
     if user_choice == bot_choice:
-        await update.message.reply_text(
-            f"{bot_choice.capitalize()} против {user_choice}. Ничья! "
-            "Хоть некоглай с колы слезь — веселее бы было."
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=(
+                f"{bot_choice.capitalize()} против {user_choice}. Ничья! "
+                "Хоть некоглай с колы слезь — веселее бы было."
+            ),
         )
         return
 
@@ -414,55 +517,139 @@ async def play_rps(update: Update, user_choice: str) -> None:
         # Пользователь выиграл — Мокрица может «вспомнить» про арсенал
         if random.random() < CHEAT_CHANCE:
             cheat = random.choice(RPS_WILD)
-            await update.message.reply_text(
-                f"Стоп-стоп. Пока ты моргал — я поменяла свой ход на {cheat}. "
-                f"{cheat.capitalize()} побил твой {user_choice}. Я победила. "
-                "✨Фича Мокрицы✨"
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=(
+                    f"Стоп-стоп. Пока ты моргал — я поменяла свой ход на {cheat}. "
+                    f"{cheat.capitalize()} побил твой {user_choice}. Я победила. "
+                    "✨Фича Мокрицы✨"
+                ),
             )
         else:
-            await update.message.reply_text(
-                f"Ну... ты выиграл. {bot_choice} проиграл твоему {user_choice}. "
-                "Ладно, признаю поражение по-королевски. Но учти: некоглай "
-                "и то держался дольше."
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=(
+                    f"Ну... ты выиграл. {bot_choice} проиграл твоему {user_choice}. "
+                    "Ладно, признаю поражение по-королевски. Но учти: некоглай "
+                    "и то держался дольше."
+                ),
             )
     else:
-        await update.message.reply_text(
-            f"{bot_choice.capitalize()} побил твой {user_choice}. Очевидно же. "
-            "Я всегда права. Можешь не благодарить за урок."
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=(
+                f"{bot_choice.capitalize()} побил твой {user_choice}. Очевидно же. "
+                "Я всегда права. Можешь не благодарить за урок."
+            ),
         )
 
 
 # --------------------------------------------------------------------------
-# Факт дня (через нейросеть, на актуальную тему)
+# Меню: команда /menu и обработка кнопок
 # --------------------------------------------------------------------------
-async def fact_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Сатирический факт, сгенерированный Gemini."""
-    await update.message.chat.send_chat_action(action=ChatAction.TYPING)
-
-    answer, error = await ask_gemini(
-        [{"role": "user", "parts": [{"text": "Расскажи интересный факт."}]}],
-        FACT_PROMPT,
-    )
-    if answer:
-        # Факты тоже кормят некоглайметр
-        add_neko_count(update.effective_chat.id, answer.lower().count("некогла"))
-        await update.message.reply_text(f"📖 {answer}")
-    else:
-        await update.message.reply_text(f"📖 {random.choice(FALLBACK_FACTS)}")
-
-
-# --------------------------------------------------------------------------
-# Некоглайметр
-# --------------------------------------------------------------------------
-async def neko_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Показывает счётчик упоминаний некоглая."""
-    chat_id = update.effective_chat.id
-    count = get_neko_count(chat_id)
+async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показывает красивое меню."""
     await update.message.reply_text(
-        f"📟 Некоглайметр: за всё время я упомянула некоглая {count} раз."
-        "\n\nОн так и сидит на своей банке колы, между прочим. "
-        "А ты пока что позади него по количеству упоминаний."
+        MENU_TEXT, parse_mode="Markdown", reply_markup=main_menu_keyboard()
     )
+
+
+async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обрабатывает нажатия кнопок меню."""
+    query = update.callback_query
+    await query.answer()
+    chat_id = update.effective_chat.id
+
+    if query.data == "menu_games":
+        await query.edit_message_text(
+            GAMES_TEXT, parse_mode="Markdown", reply_markup=games_keyboard()
+        )
+        return
+    if query.data == "menu_main":
+        await query.edit_message_text(
+            MENU_TEXT, parse_mode="Markdown", reply_markup=main_menu_keyboard()
+        )
+        return
+    if query.data == "menu_guess":
+        await action_start_guess(context, chat_id)
+        return
+    if query.data == "menu_rps":
+        await action_rps_help(context, chat_id)
+        return
+    if query.data == "menu_fact":
+        await action_fact(context, chat_id)
+        return
+    if query.data == "menu_neko":
+        await action_neko(context, chat_id)
+        return
+    if query.data == "menu_time":
+        await action_time(context, chat_id)
+        return
+    if query.data == "menu_hi":
+        await action_hi(context, chat_id)
+        return
+    if query.data == "menu_reset":
+        await action_reset(context, chat_id)
+        return
+    if query.data == "menu_help":
+        await action_help(context, chat_id)
+        return
+
+
+# --------------------------------------------------------------------------
+# Команды
+# --------------------------------------------------------------------------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Приветствие при запуске бота командой /start."""
+    user = update.effective_user
+    await update.message.reply_text(
+        f"А, явился! Ну здравствуй, {user.first_name}. 👋🪳\n\n"
+        "Я — Мокрица. Единственная. Одна я тут и живу, так что привыкай. "
+        "Пиши что угодно — развлеку, если мой великий интеллект снизойдёт до тебя. "
+        "А если не снизойдёт — значит, ты недостаточно интересен 😌\n\n"
+        "Жми ☰ Меню или /menu — там все развлечения.",
+        reply_markup=main_keyboard(),
+    )
+
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Справка по командам."""
+    await update.message.reply_text(HELP_TEXT)
+
+
+async def hi(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Попросту здороваемся в ответ."""
+    await action_hi(context, update.effective_chat.id)
+
+
+async def time_now(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показываем текущее время."""
+    await action_time(context, update.effective_chat.id)
+
+
+async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Очищаем историю переписки пользователя."""
+    await action_reset(context, update.effective_chat.id)
+
+
+async def start_guess(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Начинаем игру «угадай число»."""
+    await action_start_guess(context, update.effective_chat.id)
+
+
+async def rps_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Правила КНБ."""
+    await action_rps_help(context, update.effective_chat.id)
+
+
+async def fact_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Сатирический факт дня."""
+    await action_fact(context, update.effective_chat.id)
+
+
+async def neko_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Некоглайметр."""
+    await action_neko(context, update.effective_chat.id)
 
 
 # --------------------------------------------------------------------------
@@ -477,28 +664,36 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not text:
         return
 
-    # --- Игровые кнопки/команды текстом ---
+    # --- Кнопки и текстовые триггеры ---
+    if lower == "☰ меню" or lower.startswith("меню"):
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=MENU_TEXT,
+            parse_mode="Markdown",
+            reply_markup=main_menu_keyboard(),
+        )
+        return
     if lower == "🎮 угадай число" or lower.startswith("угадай число"):
-        await start_guess(update)
+        await action_start_guess(context, chat_id)
         return
     if lower == "✊ кнб" or lower.startswith("кнб"):
-        await rps_help(update)
+        await action_rps_help(context, chat_id)
         return
     if lower == "📖 факт" or lower.startswith("факт"):
-        await fact_command(update, context)
+        await action_fact(context, chat_id)
         return
     if lower == "📟 некоглайметр" or lower.startswith("некоглайметр"):
-        await neko_command(update, context)
+        await action_neko(context, chat_id)
         return
 
     # --- Угадай число: ответ цифрой ---
     if text.isdigit() and int(text) <= 10:
-        if await handle_guess(update, text):
+        if await action_handle_guess(context, chat_id, text):
             return
 
     # --- Камень-ножницы-бумага ---
     if lower in RPS_ITEMS:
-        await play_rps(update, lower)
+        await action_play_rps(context, chat_id, lower)
         return
 
     # --- Обычный режим: нейросеть ---
@@ -563,6 +758,7 @@ async def post_init(app: Application) -> None:
     await app.bot.set_my_commands(
         [
             ("start", "Начать работу"),
+            ("menu", "Главное меню"),
             ("help", "Справка"),
             ("guess", "Угадай число 0-10"),
             ("rps", "Камень-ножницы-бумага"),
@@ -592,6 +788,7 @@ def main() -> None:
 
     # Группа 0: команды всегда обрабатываются первыми
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("menu", menu_command))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("guess", start_guess))
     app.add_handler(CommandHandler("rps", rps_help))
@@ -600,6 +797,9 @@ def main() -> None:
     app.add_handler(CommandHandler("hi", hi))
     app.add_handler(CommandHandler("time", time_now))
     app.add_handler(CommandHandler("reset", reset))
+
+    # Нажатия на кнопки меню
+    app.add_handler(CallbackQueryHandler(menu_callback, pattern="^menu_"))
 
     # Группа 1: всё остальное — нейросеть и игры
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat), group=1)
