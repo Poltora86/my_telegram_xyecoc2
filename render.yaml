@@ -1,0 +1,14 @@
+# Конфигурация для деплоя на Render.com (Blueprint)
+# http://render.com
+services:
+  - type: web
+    name: tg-command-bot
+    runtime: python
+    plan: free
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python bot.py"
+    envVars:
+      - key: BOT_TOKEN
+        sync: false # значение зададите вручную в дашборде Render
+      - key: GEMINI_API_KEY
+        sync: false # бесплатный ключ: https://aistudio.google.com/apikey
