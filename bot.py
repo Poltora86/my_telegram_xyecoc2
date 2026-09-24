@@ -45,7 +45,7 @@ TOKEN = os.getenv("BOT_TOKEN")
 PROXY = os.getenv("BOT_PROXY")  # опционально, например socks5://127.0.0.1:1080
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chat_history.db")
 MAX_HISTORY = 20  # сколько последних сообщений помнить на собеседника
