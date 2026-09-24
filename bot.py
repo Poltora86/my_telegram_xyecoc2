@@ -172,9 +172,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
     await update.message.reply_text(
-        f"Привет, {user.first_name}! 👋🪳\n\n"
-        "Я — Мокрица. Где ты, там и я — так уж вышло. "
-        "Пиши что угодно, но готовься к моему величию 😌",
+        f"А, явился! Ну здравствуй, {user.first_name}. 👋🪳\n\n"
+        "Я — Мокрица. Единственная. Одна я тут и живу, так что привыкай. "
+        "Пиши что угодно — развлеку, если мой великий интеллект снизойдёт до тебя. "
+        "А если не снизойдёт — значит, ты недостаточно интересен 😌",
         reply_markup=keyboard,
     )
 
@@ -182,21 +183,25 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Справка по командам."""
     await update.message.reply_text(
-        "Что я умею:\n"
-        "💬 Просто пиши мне текст — отвечу, чем богат\n"
-        "🧠 Я помню контекст беседы (до 20 последних сообщений)\n\n"
+        "Великая Мокрица объясняет, что здесь можно делать:\n\n"
+        "💬 Просто пиши текст — отвечу, чем богат (богат я, кстати, сильно)\n"
+        "🧠 Я помню нашу беседу (до 20 последних сообщений — большего ты не заслужил)\n\n"
         "Команды:\n"
-        "/start — начать работу\n"
-        "/help — эта справка\n"
-        "/hi — просто привет\n"
-        "/time — показать текущее время\n"
-        "/reset — начать новую беседу (очистить историю)\n"
+        "/start — позвать меня (не приду, но отвечу)\n"
+        "/help — эта инструкция, в который раз\n"
+        "/hi — поздороваться, будто мы не виделись\n"
+        "/time — спросить время. Да, я знаю его. Не благодари.\n"
+        "/reset — стереть беседу и сделать вид, что мы не знакомы\n"
     )
 
 
 async def hi(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Попросту здороваемся в ответ."""
-    await update.message.reply_text(f"Привет, {update.effective_user.first_name}! Рад тебя видеть 😊")
+    await update.message.reply_text(
+        f"{update.effective_user.first_name}? Опять ты. Ладно, привет. "
+        "Раз уж ты поздоровался — считай, мы друзья. Учитывая мой статус, "
+        "это большая честь для тебя 😏"
+    )
 
 
 async def time_now(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -204,14 +209,21 @@ async def time_now(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     from datetime import datetime
 
     now = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
-    await update.message.reply_text(f"Сейчас {now} ⏰")
+    await update.message.reply_text(
+        f"Сейчас {now} ⏰ Хочешь знать, бежит ли время? "
+        "Бежит. Но с такими собеседниками, как ты, оно скорее ползёт."
+    )
 
 
 async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Очищаем историю переписки пользователя."""
     chat_id = update.effective_chat.id
     clear_history(chat_id)
-    await update.message.reply_text("История очищена. Начнём с чистого листа 🧹")
+    await update.message.reply_text(
+        "Всё, стёрто. Почистил историю так же быстро, как некоглай "
+        "соскакивает с банки колы — молниеносно. Начинаем заново, "
+        "с чистого листа. И в этот раз постарайся быть интереснее 🧹"
+    )
 
 
 # --------------------------------------------------------------------------
