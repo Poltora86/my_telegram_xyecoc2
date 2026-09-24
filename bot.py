@@ -18,6 +18,7 @@ Telegram-бот с нейросетью (Google Gemini).
     3. python bot.py
 """
 
+import asyncio
 import logging
 import os
 import sqlite3
@@ -46,6 +47,9 @@ PROXY = os.getenv("BOT_PROXY")  # опционально, например socks
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
+
+# Запасные модели на случай перегрузки (503/429) основной
+FALLBACK_MODELS = ["gemini-2.0-flash", "gemini-2.0-flash-lite"]
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chat_history.db")
 MAX_HISTORY = 20  # сколько последних сообщений помнить на собеседника
@@ -240,13 +244,43 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "contents": history,
             "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
         }
-        url = GEMINI_URL_TEMPLATE.format(model=GEMINI_MODEL, key=GEMINI_API_KEY)
-        async with httpx.AsyncClient(timeout=60) as client:
-            response = await client.post(url, json=payload)
-            response.raise_for_status()
-            data = response.json()
 
-        answer = data["candidates"][0]["content"]["parts"][0]["text"]
+        # Список моделей: основная + запасные (без дублей)
+        models = []
+        for model in [GEMINI_MODEL, *FALLBACK_MODELS]:
+            if model not in models:
+                models.append(model)
+
+        answer = None
+        last_error = "Неизвестная ошибка"
+
+        for model in models:
+            try:
+                url = GEMINI_URL_TEMPLATE.format(model=model, key=GEMINI_API_KEY)
+                async with httpx.AsyncClient(timeout=60) as client:
+                    response = await client.post(url, json=payload)
+
+                # Перегрузка/лимит/нет модели — пробуем следующую
+                if response.status_code in (429, 500, 503, 404):
+                    last_error = f"HTTP {response.status_code} (модель {model})"
+                    await asyncio.sleep(3)
+                    continue
+
+                response.raise_for_status()
+                data = response.json()
+                answer = data["candidates"][0]["content"]["parts"][0]["text"]
+                break
+            except (httpx.HTTPStatusError, httpx.HTTPError, KeyError, IndexError) as exc:
+                last_error = str(exc)
+                await asyncio.sleep(3)
+                continue
+
+        if answer is None:
+            await update.message.reply_text(
+                f"Ой, что-то пошло не так с нейросетью 😕\n\n"
+                f"Ошибка: {last_error}"
+            )
+            return
     except Exception as exc:
         await update.message.reply_text(
             f"Ой, что-то пошло не так с нейросетью 😕\n\n"
@@ -331,4 +365,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
